@@ -1,0 +1,851 @@
+#!/usr/bin/perl
+
+# ernestine: Routing software for asterisk. It uses the AGI interface.
+# Copyright (C) 2014 Mark Krenz
+
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+#
+# You may contact the author at <deltaray+ernestine@slugbug.org>
+
+
+# This program is not meant to be run from the command line.
+# you should install it in your Asterisk extensions.conf file like this:
+#
+#   exten => s,1,AGI(ernestine)
+#   exten => s,n,Goto(internal,100,1)  ; Fallback to 100 in case ernestine fails.
+#
+# You don't have to put it first or even in the default extension.
+# However you will get more out of it if you do so.
+#
+
+use warnings;
+use strict;
+
+our $PROGRAM_NAME = 'ernestine';
+our $VERSION = 0.9;
+
+$| = 1;
+my $callerid_name_sane = 1;
+
+use Time::HiRes qw(time);
+my %times = ();
+$times{'script_start'} = Time::HiRes::time();
+
+use Getopt::Std;
+use Scalar::Util qw(looks_like_number);
+use Asterisk::AGI;
+use Config::General;
+
+$times{'post_module_load'} = Time::HiRes::time();
+
+# Provide a basic option for help, config file override and version.
+my %opts;
+getopts('hc:V', \%opts);
+if ($opts{'h'}) {
+    &show_help;
+    exit(0);
+}
+if ($opts{'V'}) {
+    print "$VERSION\n";
+    exit(0);
+}
+
+
+my $agi = new Asterisk::AGI();
+
+
+my $conf_file = "/etc/asterisk/${PROGRAM_NAME}.conf";
+if ($opts{'c'}) {
+    $conf_file = $opts{'c'};
+}
+
+my $conf = Config::General->new($conf_file);
+my %config = $conf->getall;
+
+###################
+# CONFIG DEFAULTS #
+###################
+
+our $calllogfile = $config{'CallLog'} || "/var/log/asterisk/${PROGRAM_NAME}.call_log";
+our $program_logfile = $config{'ProgramLog'} || "/var/log/asterisk/${PROGRAM_NAME}.program_log";
+our $config_log_level = $config{'LogLevel'} || 'INFO';
+
+
+our $callerid_number = $agi->get_variable('CALLERID(number)');
+our $callerid_name   = $agi->get_variable('CALLERID(name)');
+our $callerid_name_sanitized = &sanitize_callerid_name_str($callerid_name);
+# We can change this later if its not.
+
+if ($callerid_name ne $callerid_name_sanitized) {
+    $callerid_name_sane = 0;
+    &log_msg("INFO: Bad caller id name \"$callerid_name\"");
+}
+
+our $dialed_number = $agi->get_variable('CALLERID(dnid)');
+our $call_unique_id = $agi->get_variable('UNIQUEID');
+
+our $current_epoch_time = time();
+# We'll make these globals that we can use so we don't have to go calling time a bunch.
+our ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst);
+($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($current_epoch_time);
+our $dow = $wday;
+if ($dow == 0) { # People aren't used to using 0 based weekday numbers. We'll call Monday 1 and Sunday 7.
+    $dow = 7;
+}
+$year += 1900;
+$mon += 1;
+my $current_time = sprintf "%d-%02d-%02d %02d:%02d:%02d", $year, $mon, $mday, $hour, $min, $sec;
+
+
+# I'm including all the forms here for easy lookup.
+our %months = (
+    1   =>  'January',
+    2   =>  'February',
+    3   =>  'March',
+    4   =>  'April',
+    5   =>  'May',
+    6   =>  'June',
+    7   =>  'July',
+    8   =>  'August',
+    9   =>  'September',
+    10  =>  'October',
+    11  =>  'November',
+    12  =>  'December',
+    'January' =>  1,
+    'February' =>  2,
+    'March' =>  3,
+    'April' =>  4,
+    'May' =>  5,
+    'June' =>  6,
+    'July' =>  7,
+    'August' =>  8,
+    'September' =>  9,
+    'October' =>  10,
+    'November' =>  11,
+    'December' =>  12,
+    'JANUARY' =>  1,
+    'FEBRUARY' =>  2,
+    'MARCH' =>  3,
+    'APRIL' =>  4,
+    'MAY' =>  5,
+    'JUNE' =>  6,
+    'JULY' =>  7,
+    'AUGUST' =>  8,
+    'SEPTEMBER' =>  9,
+    'OCTOBER' =>  10,
+    'NOVEMBER' =>  11,
+    'DECEMBER' =>  12,
+    'Jan'  =>  1,
+    'Feb'  =>  2,
+    'Mar'  =>  3,
+    'Apr'  =>  4,
+    'May'  =>  5,
+    'Jun'  =>  6,
+    'Jul'  =>  7,
+    'Aug'  =>  8,
+    'Sep'  =>  9,
+    'Oct'  =>  10,
+    'Nov'  =>  11,
+    'Dec'  =>  12,
+    'JAN'  =>  1,
+    'FEB'  =>  2,
+    'MAR'  =>  3,
+    'APR'  =>  4,
+    'MAY'  =>  5,
+    'JUN'  =>  6,
+    'JUL'  =>  7,
+    'AUG'  =>  8,
+    'SEP'  =>  9,
+    'OCT'  =>  10,
+    'NOV'  =>  11,
+    'DEC'  =>  12,
+
+);
+our %days_of_week = (
+    1  =>  'Monday',
+    2  =>  'Tuesday',
+    3  =>  'Wednesday',
+    4  =>  'Thursday',
+    5  =>  'Friday',
+    6  =>  'Saturday',
+    7  =>  'Sunday',
+    'Monday'    =>  1,
+    'Tuesday'   =>  2,
+    'Wednesday' =>  3,
+    'Thursday'  =>  4,
+    'Friday'    =>  5,
+    'Saturday'  =>  6,
+    'Sunday'    =>  7,
+    'Mon'  =>  1,
+    'Tue'  =>  2,
+    'Wed'  =>  3,
+    'Thu'  =>  4,
+    'Fri'  =>  5,
+    'Sat'  =>  6,
+    'Sun'  =>  7,
+);
+
+our %log_levels = (
+    'OFF'   =>  0,
+    'FATAL' =>  1,
+    'ERROR' =>  2,
+    'WARN'  =>  3,
+    'INFO'  =>  4,
+    'DEBUG' =>  5,
+);
+$times{'post_variable_init'} = Time::HiRes::time();
+
+# This is the base route definitions that are defined by default
+# And the user can build off of these.
+our %route_definitions = (
+    'HANGUP' => [],
+    'GOTO' => [],
+    'PLAY' => [],
+    'PASSTHRU' => [],
+);
+
+our %format_keys = (
+
+    'MONTH'         =>  \&does_month_match,
+    'MONTHDAY'      =>  \&does_day_match,
+    'DAYOFWEEK'     =>  \&does_dow_match,
+    'TIME'          =>  \&does_time_match,
+    'CALLEDNUMBER'  =>  \&does_callednumber_match,
+    'CALLERID'      =>  \&does_callerid_match,
+    'ROUTE'         =>  \&process_route,
+
+);
+
+
+################
+# MAIN PROGRAM #
+################
+
+# Read in custom route definitons.
+if (defined($config{'RouteDefinitions'}{'RouteDefine'})) {
+DEF: foreach my $routedef (@{$config{'RouteDefinitions'}{'RouteDefine'}}) {
+
+        &log_msg('DEBUG',"Route definition line: $routedef");
+
+        my $route_name = ""; # Holds the defined name of the route.
+        my @route_targets = (); # This array holds the list of routes in the order defined.
+        
+        my $route_target_string = "";
+        # The target of the definition cannot include whitespace for now.
+        ($route_name, $route_target_string) = split(/\s+/, $routedef);
+
+        # Route definition names are restricted to alphanumeric characters and underscore.
+        if ($route_name !~ m/^[a-zA-Z0-9_]+$/) {
+            &log_msg('ERROR', "Route name $route_name is not valid.");
+        }
+
+        @route_targets = split(/,/, $route_target_string);
+        foreach my $target (@route_targets) {
+            my $target_name = $target;
+            $target_name =~ s/\(.*$//; # Strip off any argument section.
+            if (!defined($route_definitions{$target_name})) {
+                &log_msg('ERROR', "Invalid route definition $route_name, $target_name is not a defined route.");
+                next DEF;
+            }
+        }
+        $route_definitions{$route_name} = \@route_targets;
+    }
+}
+$times{'post_route_def_process'} = Time::HiRes::time();
+
+
+my $symbolic_call_route = ""; # This will be the route target string that is on the matched line.
+if (defined($config{'RuleSets'}{'RuleSet'})) {
+RULE: foreach my $ruleset (@{$config{'RuleSets'}{'RuleSet'}}) {
+        &log_msg('DEBUG', "Attempting to load ruleset at path " . $ruleset->{'Path'});
+        if (-f $ruleset->{'Path'}) {
+            if ($ruleset->{'Type'} eq "fullrule") {
+                &log_msg('DEBUG', "Processing fullrule type ruleset file " . $ruleset->{'Path'});
+                if ($symbolic_call_route = &check_full_route_file($ruleset->{'Path'}, $dialed_number, $callerid_number)) {
+                    last RULE;
+                }
+            } elsif ($ruleset->{'Type'} eq "numberlist") {
+                &log_msg('DEBUG', "Processing numberlist type ruleset file " . $ruleset->{'Path'});
+                if (&check_numberlist_file($ruleset->{'Path'}, $callerid_number)) {
+                    &log_msg('DEBUG', "Number matched, routing to default route " . $ruleset->{'DefaultRoute'});
+                    $symbolic_call_route = $ruleset->{'DefaultRoute'};
+                    last RULE;
+                }
+            }
+        } elsif (-d $ruleset->{'Path'}) {
+            &log_msg('DEBUG', "Processing ruleset directory " . $ruleset->{'Path'});
+            # CODE GOES HERE. We'll deal with directories later.
+        } else {
+            &log_msg('ERROR', "Ruleset Path " . $ruleset->{'Path'} . " is not a file or directory.");
+            next RULE;
+        }
+
+    }
+}
+$times{'post_route_match'} = Time::HiRes::time();
+
+my $expanded_call_route = &resolve_route($symbolic_call_route);
+&log_msg('DEBUG', "Matched call route is $symbolic_call_route");
+&log_msg('INFO', "Expanded call route is $expanded_call_route");
+
+
+$times{'post_resolve_route'} = Time::HiRes::time();
+my $preprocessing_time = $times{'post_resolve_route'} - $times{'script_start'};
+&log_msg('INFO', "Preprocessing time took $preprocessing_time secs");
+
+open(my $logfh, ">>", $calllogfile) || &log_msg("ERROR", "Could not open log file $calllogfile for writing: $!");
+my $logline = sprintf "[%s %s] %s %s %s \"%s\" -> \"%s\"\n", $current_time,
+                                                      $current_epoch_time,
+                                                      $call_unique_id,
+                                                      $dialed_number,
+                                                      $callerid_number,
+                                                      $callerid_name_sanitized,
+                                                      $symbolic_call_route;
+
+&log_msg('DEBUG',"Constructed logline: $logline");
+print $logfh $logline;
+close($logfh);
+
+my $route_command;
+while (($route_command, $expanded_call_route) = &pop_route_string($expanded_call_route)) {
+
+    &log_msg('INFO', "Running route command $route_command");
+
+    # ok, here is were we take the route returned and send the call there.
+    if ($route_command eq "HANGUP") {
+        &log_msg('DEBUG', "In HANGUP route");
+        &log_msg('DEBUG', "AGI hangup");
+        $agi->hangup();
+
+    } elsif ($route_command =~ m/^GOTO\(([^\)]*)\)$/) {
+        my $passed_args_string = $1;
+        &log_msg('DEBUG', "In GOTO route. Passed extension is ${passed_args_string}.");
+
+        if ($passed_args_string =~ m/^([0-9A-Za-z,_-]+)$/) { # NEED TO IMPROVE THIS PART.
+            &log_msg('INFO', "INFO: GOTO extension $passed_args_string");
+            $agi->answer();
+            &log_msg('DEBUG', "AGI GOTO $passed_args_string");
+            $agi->exec('Goto', "$passed_args_string");
+        } else {
+            &log_msg('ERROR', "Extension $passed_args_string is not valid. Exiting.");
+            exit(1);
+        }
+    } elsif ($route_command =~ m/PLAY\(([^\)]*)\)$/) {
+    #    $agi->stream_file('asterisk-sounds/get-in-line-sales-guy','8');
+    #    sleep(10);
+        my $passed_audiofile = $1;
+        &log_msg('DEBUG', "AGI Playback of file $passed_audiofile");
+        $agi->exec('Playback', $passed_audiofile);
+
+    } elsif ($route_command eq "PASSTHRU") {
+        &log_msg('DEBUG', "We're inside PASSTHRU route");
+        exit(0);
+    #} elsif ($route_command eq "") {
+    } else {
+        &log_msg('ERROR', "Something went wrong and we're in the else clause of routes.");
+    }
+
+}
+
+$times{'script_finished'} = Time::HiRes::time();
+
+my $total_time = $times{'script_finished'} - $times{'script_start'};
+&log_msg('INFO', "Total script time took $total_time secs");
+
+
+#############
+# FUNCTIONS #
+#############
+sub show_help() {
+    print <<"EOF";
+--------------------------------------------------------------------------
+$PROGRAM_NAME: A call router for Asterisk using the AGI interface.
+Version: $VERSION
+--------------------------------------------------------------------------
+This program is not meant to be run from the command line, it needs to be
+started from Asterisk through your dial plan. See the README file that
+came with this software for details on setup.
+
+Options:
+      -h             - Show this help.
+
+      -c <conffile>  - Use an alternate config file.
+                       Default is /etc/asterisk/ernestine.conf
+
+
+EOF
+
+    return 1;
+}
+
+
+sub get_timestamp() {
+    my $epoch_time = shift || time();
+    # We'll make these globals that we can use so we don't have to go calling time a bunch.
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst);
+    ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($epoch_time);
+    $year += 1900;
+    $mon += 1;
+    my $timestamp = sprintf "%d-%02d-%02d %02d:%02d:%02d", $year, $mon, $mday, $hour, $min, $sec;
+    return $timestamp;
+}
+
+sub log_msg() {
+    my $log_level = shift;
+    my $log_msg = shift;
+    chomp($log_msg); # Remove any trailing newline that might already be there.
+    my $timestamp = &get_timestamp(time());
+
+    my $call_unique_id_string = "";
+
+    if (defined($call_unique_id) && $call_unique_id != "") {
+        $call_unique_id_string = " ($call_unique_id)";
+    }
+
+    if ($log_levels{$log_level} <= $log_levels{$config_log_level}) {
+            open(my $log_fh, ">>", $program_logfile) || die("FATAL: Couldn't open program log file $program_logfile: $!\n"); 
+            flock($log_fh, 2) || die;
+            print $log_fh "[$timestamp] $log_level" . $call_unique_id_string . ": $log_msg\n";
+            close($log_fh);
+    }
+    return 1; 
+}
+ 
+sub fatal() {
+    my $fatal_message = shift;
+    &log_msg('FATAL', $fatal_message);
+    die($fatal_message);
+}
+
+
+# We don't want to have a caller id string with weird characters in it, so let's check it
+# and sanitize it.
+sub sanitize_callerid_name_str() {
+    my $namestring = shift;
+
+    my $str_len = length($namestring);
+    my $replacement_char = '?';
+
+    # These are the IA5 characters that I find acceptable for display.
+    my @acceptable_ascii_chars = (9, 32, 33, 34, 35, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
+                              49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65,
+                              66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82,
+                              83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99,
+                             100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113,
+                             114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125);
+
+    for (my $i=0; $i<$str_len; $i++) {
+        my $ascii_number = ord(substr($namestring,$i,1));
+        if (!is_value_in_array($ascii_number, \@acceptable_ascii_chars)) {
+            substr($namestring,$i,1,$replacement_char);
+        }
+
+    }
+
+    return $namestring;
+}
+
+sub is_value_in_array() {
+    my $value = shift;
+    my $array = shift;
+    my $in_array = 0;
+    foreach my $elem (@$array) {
+        if ($value == $elem) {
+            $in_array = 1;
+            last; # Short circuit the loop.
+        }
+    }
+    return $in_array;
+}
+
+sub check_numberlist_file() {
+    my $numberfile = shift;
+    my $callerid_number = shift;
+
+    open(my $fh, "<", $numberfile) || return 'PASSTHRU';
+    &log_msg('DEBUG', "Successfully opened numberfile $numberfile");
+    my $ln = 1;
+    while (<$fh>) {
+        chomp($_);
+        $_ =~ s/-//g; # Remove special formating.
+        if ($_ eq $callerid_number) {
+            close($fh);
+            &log_msg('INFO', "Found $callerid_number in numberfile $numberfile");
+            return 1;
+        }
+    }
+    &log_msg('DEBUG', "Number $callerid_number not found in numberfile $numberfile");
+    close($fh);
+    return 0;
+}
+
+sub check_full_route_file() {
+    my $routefile = shift;
+    my $dialed_number = shift;
+    my $callerid_number = shift;
+    my $return_route = ""; # This is what we will return.
+
+    &log_msg('DEBUG', "Inside check_full_route_file function for $routefile");
+
+    open(my $fh, "<", $routefile) || return 'PASSTHRU'; # Just skip special routing.
+    &log_msg('DEBUG', "Successfully opened routefile $routefile");  
+
+    my @line_format = ('MONTH','MONTHDAY','DAYOFWEEK','TIME','CALLEDNUMBER','CALLERID','ROUTE');
+    my $line_format_length = @line_format;
+ 
+    my $ln = 1; 
+LINE:while (<$fh>) {
+        chomp($_);
+        $_ =~ s/\#.*$//; # Strip comments.
+        if ($_ =~ m/^\s*$/) { # Ignore blank lines or with just whitespace.
+            $ln++;
+            next;
+        }
+        &log_msg('DEBUG', "This is a full route line \"$_\"");
+
+        # If this is a format line, we need to redefine the format.
+        if ($_ =~ m/^FORMAT:\s*(.+)\s*$/) {
+            my $line_format_string = $1;
+            if ($line_format_string =~ m/^[A-Z\ ]+$/) {
+                @line_format = split(/\s+/, $line_format_string);
+                $line_format_length = @line_format;
+
+            } else {
+                &fatal("Routefile $routefile had an invalid format line at line $ln");
+            }
+            next LINE;
+        }
+
+
+        # First check for formatting and correct number of values.
+        if ($_ =~ m/^\s*(.+)\s*$/) {
+            my $line_string = $1;
+            my @line_values = split(/\s+/, $line_string);
+            if (scalar @line_values != scalar @line_format) {
+                &log_msg('ERROR', "On line $ln of routefile $routefile there are not the correct number of values.");
+                next LINE;
+            }
+            
+            
+            for (my $i = 0; $i < $line_format_length; $i++) { # Iterate over the format and check the line.
+                my $value_type = $line_format[$i];
+                my $value = $line_values[$i];
+                if ($value_type eq 'ROUTE') {
+                    $return_route = $value;
+                } else {
+
+                    if (!$format_keys{$value_type}($value)) {
+                        &log_msg('INFO', "No match for value $value of type $value_type");
+                        next LINE;
+                    } 
+                }
+            } # If it makes it past here, then the value matched.
+            &log_msg('INFO', "On line $ln of file $routefile matched full route line \"$_\"");
+
+
+
+
+            &log_msg("INFO", "Return route is $return_route");
+            last LINE; # we're done once we've matched the first route.
+ 
+
+        }
+
+        $ln++;
+    }    
+    &log_msg("INFO", "Processed $ln lines of route file $routefile");
+
+    return $return_route;
+}
+
+
+# This function simply pops the first value off the route string
+# and returns an array with the popped value and the remainder of
+# the string.
+sub pop_route_string() {
+    my $route_string = shift;
+    my $route_string_len = length($route_string);
+    my $return_route = ""; 
+    my $return_rest_of_route_string = "";
+
+    if ($route_string eq "") {
+        return; # This will end the while loop.
+    }
+
+    my $inside_args = 0;
+CHR:for (my $i = 0; $i < $route_string_len; $i++) {
+        my $this_char = substr($route_string, $i, 1);
+        if ($this_char eq "(") {
+            $inside_args = 1;
+        } elsif ($inside_args == 1 && $this_char eq ")") {
+            $inside_args = 0;
+        }
+
+        if ($inside_args == 0 && $this_char eq ",") {
+            $return_rest_of_route_string = substr($route_string, $i+1);
+            last CHR;
+        }
+        $return_route .= $this_char;
+
+    } # If we reach the end of the route string,
+      # we don't really need to process that because
+      # It will return "" anyways.
+
+    return ($return_route, $return_rest_of_route_string);
+}
+
+
+sub route_base_name() {
+    my $route_string = shift;
+    $route_string =~ s/\(.*$//;
+    return $route_string;
+}
+
+# This will take a route string and resolve each route until its at a base Asterisk command.
+# Think of it was alias resolving.
+sub resolve_route() {
+    my $route_string = shift;
+    my $return_route_string = "";
+    my $route_string_len = length($route_string);
+    &log_msg('DEBUG',"Resolving route $route_string");
+
+    if ($route_string eq "") {
+        return;
+    }
+
+    my $this_route;
+    while (($this_route, $route_string) = &pop_route_string($route_string)) {
+        my $this_route_name = &route_base_name($this_route);        
+
+        if (defined($route_definitions{$this_route_name})) {
+            &log_msg('DEBUG', "The route $this_route_name is defined in route_definitions");
+
+            if (@{$route_definitions{$this_route_name}}) { # The array is not empty so the route is an alias for others.
+                $this_route = join(",", @{$route_definitions{$this_route_name}}); # replace this_route with its subroutes.
+                # George Springer, this ones for you!
+                $return_route_string = &resolve_route($this_route) . (($route_string ne "") ? "," . &resolve_route($route_string) : "");
+                return $return_route_string;
+            } else { # This route is a real route command.
+                &log_msg('DEBUG', "Route $this_route is a real route command.");
+                $return_route_string = $this_route . (($route_string ne "") ? "," . &resolve_route($route_string) : "");
+                return $return_route_string;
+            }
+        } else {
+            &log_msg('FATAL', "The route $this_route_name is not defined.");
+            die();
+        }
+    }
+}
+
+
+# Does the phone number match the matching expression.
+# This is simple matching. ? means match any one character.
+sub does_number_match() {
+    my $number = shift;
+    my $expression_passed = shift;
+
+    $number =~ s/-//g;
+
+EXP: foreach my $expression (split(/,/, $expression_passed)) {
+
+        # Strip all the '-'s from the numbers and expressions.
+        $expression =~ s/-//g;
+        &log_msg('DEBUG', "Number is: $number and expression is $expression");
+        
+    
+        my $number_length = length($number);
+        my $expression_length = length($expression);
+    
+        my $expression_char = "";
+        my $number_char = "";
+    
+        if ($expression eq '*') {
+            return 1;
+        }
+    
+        if ($number_length != $expression_length) {
+            # Right now we're not handling variable length wildcards,
+            # so if the number and expression aren't the same length aren't the same,
+            # then it obviously doesn't match.
+            next EXP;
+        }
+    
+        for (my $i = 0; $i < $expression_length; $i++) {
+            $expression_char = substr($expression, $i, 1);
+            $number_char = substr($number, $i, 1);
+    
+            if ($expression_char eq '?') {
+                next;
+            } elsif ($expression_char == $number_char) {
+                next;
+            } else {
+                &log_msg('INFO', "Number $number didn't match expression $expression");
+                next EXP; # It doesn't match.
+            }
+        }
+        return 1; # Yeah it matches! But this logic is a bit weird.
+    }
+
+}
+
+sub does_callerid_match() {
+    my $expression = shift;
+    return &does_number_match($callerid_number, $expression);
+}
+sub does_callednumber_match() {
+    my $expression = shift;
+    return &does_number_match($dialed_number, $expression);
+}
+
+# For now, we'll require 24 hour time with minutes required.
+sub does_time_match() {
+    my $tod_expression_passed = shift;
+    my $current_hour = int($hour);
+    my $current_minute = int($min);
+    #my $current_second = int($sec); # We're not going to handle seconds at this point.
+
+    foreach my $tod_expression (split(/,/, $tod_expression_passed)) {
+
+        if ($tod_expression eq '*') {
+            return 1;
+        } elsif ($tod_expression =~ /^([012][0-9]):([0-5][0-9])-([012][0-9]):([0-5][0-9])$/) {
+            my $start_time_hour = int($1);
+            my $start_time_minute = int($2);
+            my $end_time_hour = int($3);
+            my $end_time_minute = int($4);
+   
+            &log_msg('DEBUG',"Time expression is $tod_expression");
+           
+            if (
+                ($start_time_hour > $end_time_hour) ||
+                (($start_time_hour == $end_time_hour) && ($start_time_minute > $end_time_minute))
+               ) {
+                &log_msg("ERROR", "Invalid time expression, start is after end: $tod_expression");
+                return 0;
+            }     
+
+            if (($start_time_hour < $current_hour) && ($current_hour < $end_time_hour)) {
+                # If the hour is between but not equal two the start/end hour, it doesn't matter what the minute is.
+                return 1;
+            } elsif (($start_time_hour == $current_hour) && ($current_hour == $end_time_hour)) {
+                # If the start, end and current hour are all the same, then only the minute range matters.
+                if (($start_time_minute <= $current_minute) && ($current_minute < $end_time_minute)) {
+                    return 1;
+                }
+            } elsif ($start_time_hour == $current_hour) {
+                # If the hour is equal to the start time hour. Then the current minute must be greater than the start minute.
+                if ($start_time_minute <= $current_minute) {
+                    return 1;
+                }
+            } elsif ($current_hour == $end_time_hour) {
+                # If the hour is equal to the end time hour
+                if ($current_minute < $end_time_minute) {
+                    return 1;
+                }
+            }
+        }
+    }
+    &log_msg('DEBUG',"Time expression $tod_expression_passed did not match");
+    return 0;
+}
+
+sub does_day_match() {
+    my $day_expression_passed = shift;
+
+    foreach my $day_expression (split(/,/, $day_expression_passed)) {
+    
+        if ($day_expression eq '*') {
+            return 1;
+        } elsif (&looks_like_number($day_expression) && $day_expression == $mday) {
+            return 1;
+        }
+    }
+
+    &log_msg('DEBUG', "Day expression $day_expression_passed did not match.");
+    return 0;
+}
+
+# Day of week
+sub does_dow_match() {
+    my $dow_expression_passed = shift;
+    my $cur_dow_name = $days_of_week{$dow};
+
+    foreach my $dow_expression (split(/,/, $dow_expression_passed)) {
+
+        if ($dow_expression eq '*') {
+            return 1;
+        } elsif (&looks_like_number($dow_expression) && $dow_expression == $dow) {
+            return 1;
+        } elsif (($dow_expression =~ m/^[A-Za-z]+$/) && ($days_of_week{$dow_expression} == $dow)) {
+            return 1;
+        } elsif ($dow_expression =~ m/^([A-Za-z]+)-([A-Za-z]+)$/) { # Symbolic day names.
+            my $start_dow = $1;
+            my $end_dow = $2;
+            if (defined($days_of_week{$start_dow}) && defined($days_of_week{$end_dow})) {
+                if (($days_of_week{$start_dow} <= $dow) && ($dow <= $days_of_week{$end_dow})) {
+                    return 1;
+                }
+            } else {
+                &log_msg('ERROR', "Invalid dow_expression: $dow_expression");
+                return 0;
+            }
+        } elsif ($dow_expression =~ m/^([1-7])-([1-7]+)$/) {
+            my $start_dow = $1;
+            my $end_dow = $2;
+            if (($start_dow <= $dow) && ($dow <= $end_dow)) {
+                return 1;
+            }
+        }
+    }
+
+    &log_msg('DEBUG', "Dow expression $dow_expression_passed did not match.");
+    return 0;
+} 
+
+sub does_month_match() {
+    my $month_expression_passed = shift;
+    my $cur_month_name = $months{$mon};
+
+    foreach my $month_expression (split(/,/, $month_expression_passed)) {
+
+        if ($month_expression eq '*') {
+            return 1;
+        } elsif (&looks_like_number($month_expression) && $month_expression == $mon) {
+            return 1;
+        } elsif (($month_expression =~ m/^[A-Za-z]+$/) && ($months{$month_expression} == $mon)) {
+            return 1;
+        } elsif ($month_expression =~ m/^([A-Za-z]+)-([A-Za-z]+)$/) { # Symbolic month names.
+            my $start_month = $months{$1};
+            my $end_month = $months{$2};
+    
+            if ($start_month <= $mon && $mon <= $end_month) {
+                return 1;
+            }
+        } elsif ($month_expression =~ m/^([0-9]+)-([0-9]+)$/) { # Numeric use.
+            my $start_month = $1;
+            my $end_month = $2;
+    
+            if ($start_month <= $mon && $mon <= $end_month) {
+                return 1;
+            } else {
+                return 0;
+            }
+    
+        }
+    }
+    &log_msg('DEBUG',"Month expression $month_expression_passed did not match");
+   
+    return 0;
+}

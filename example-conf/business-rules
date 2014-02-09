@@ -1,0 +1,42 @@
+# This file makes it easier to blacklist and do other routing operations based on
+# a number that is matched. The format is like this:
+# <month> <Day of month> <Day of Week> <Time>    <dialed number or expression>  <caller id number or expression>     <operations>
+#
+# Month can be 1 through 12, the name of the month or the three character abbreviated name (ie. Dec)
+# Day of month must be numeric.
+# Day of week can be 1 through 7 with 1 being Monday and 7 being Sunday. Or you can use the full name or three character abbreviated name.
+# Time must be in HH:MM 24 time format. Unlike months and days, Time ranges do not include the end_time's minute. This is
+#    somewhat the natural way that people tend to think of time ranges and I didn't want to fight that instinct.
+#
+# Dialed number is the numeric number that the calling party dialed. This can include - for readability. You can also use ? for match any number.
+# Caller id is the number of the calling party.  It can use the same rules as for the dialed number.
+#
+# Right now the expression can include the wildcards * to mean match anything.
+# But nothing more sophisticated.
+#
+# The operation can be one of the following
+#
+# PASSTHRU - Do nothing, just exit and go onto the next step in the asterisk config for this extension.
+# GOTO(context,number,priority) - Like Asterisk Goto command.
+#
+
+# This next line defines how lines after will be formatted. Don't change it
+# unless you want to change the format for the remainder of the file.
+# Or until you define another FORMAT line in it.
+# See the docs for how this line works.
+
+#Month  Day  DOW  Time         Called #  CallerID        Route
+
+Dec     24   *       17:00-24:00  *           *               PLAY(merry-christmas-were-closed),AFTERHOURS
+Dec     25   *       *            *           *               PLAY(merry-christmas-were-closed),AFTERHOURS
+
+# Local area code calls should go to LOCAL, which is a custom defined route.
+*       *    *       *           *           317-???-????      LOCAL
+
+
+
+
+# A default fall through route.
+*       *    *    *            *           *               PASSTHRU
+
+

@@ -1,0 +1,86 @@
+Here are some ideas I have for future development. I'd appreciate feedback
+on them before working on implementation. Something to keep in mind. Ernestine
+is not meant to be the destination but the guide to it. Its more meant to
+be an automated switchboard operator (this is where the name comes from).
+Some people may be tempted to use it for destination type applications such
+as turning it into a voicemail box system or whatever. This isn't the goal
+of the program.
+
+
+1. RouteDefinitions that can take arguments.
+
+ RouteDefinition  EXT   GOTO(internal,\1,1)  # ie EXT(202)
+                                                Easy extension routes.
+
+ RouteDefinition  APLAY PLAY(asterisk-sound/\1)  # So you don't have
+                                                    to specify a dir every time.
+
+
+
+
+2. Matching rule that allows you to match a value in a file.
+
+  I imagine that there are other things that people would like to quickly match
+against. For instance, the temperature for a zipcode.  This is the type of
+thing where probably the information in the file should be cached so its not
+read a bunch of times. The syntax for the match rule would have to be fairly
+simple too.
+
+ One way I thought this could be done is to define the file in the
+ernestine.conf file and give it a "key" name that can then be referenced in a
+matching rule. Liek this:
+
+   ValueFile  temp /path/to/file/with/one/temperature.txt
+
+   Then in a ruleset file check it with the keyname and an expression like a
+simple value expression:
+
+*  *   FileNumVal(temp,\1<32)  *  PLAY(check-your-pipes),GOTO(internal,100,1)
+
+  So then if the value in the file myvalue.txt (referenced by \1) is less than
+32, it will match.  When the ValueFile line is read in from the ernestine.conf
+file, it will read the file data at the same time and cache it so it doesn't
+have to read the file again for each rule line.
+
+  One issue is, should we have a match rule for each different type of value?
+For instance, numbers vs. strings.
+
+
+3. Also, I'm wondering what other asterisk commands would be useful as target
+ routes. I'm hesitant to just start including all of them because that may
+ present complex issues and behavior, plus will slow ernestine down.
+
+
+4. Holidays are often complex, but it would be handy to include them. 
+I already wrote a separate program for handling a few holiday calculations 
+and playing various warnings based on that. I may just release that other
+program as something separate.
+
+ Since there are so many holidays around the world, I think a better way to
+ do this may be to let people define their own. For instance, in the
+ ernestine.conf file you could have the following command for defining
+ the date of U.S. Thanksgiving.
+
+   Holiday USThanksgiving  NOVEMBER-THURSDAY4
+
+  And then ernestine would have a way of processing what that means. There
+ is already some standardized syntax for dealing with these things that we
+ could look at using.
+
+
+5. RANDOM route. It might be useful for people to play a random audio file or
+ go to a random extension or the like.
+
+
+6. Wildcarding. it would be nice to use wildcards and more complex regular
+expressions for matching numbers or even dates, they are tricky to implement
+in a way that is safe and fast. I think what I will end up doing is offering
+limited regular expressions like the following
+
+            304*  Matches anything that starts with 304
+            8[167]8 # Matches 818 868 and 878
+            3[01]7* # Matches 307 or 317 followed by anything.
+
+
+
+

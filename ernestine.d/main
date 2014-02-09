@@ -1,0 +1,71 @@
+# This file makes it easier to blacklist and do other routing operations based
+# on a number that is matched. The format is like this:
+
+# <month> <Day of month> <Day of Week> <Time> <dialed number>  <caller id number>  <route>
+
+# Month can be 1 through 12, the name of the month or the three character
+# abbreviated name (ie. Dec)
+
+# Day of month must be numeric.
+
+# Day of week can be 1 through 7 with 1 being Monday and 7 being Sunday. Or
+# you can use the full name or three character abbreviated name.
+
+# Time must be in HH:MM 24 time format. Unlike months and days, Time ranges do
+# not include the end_time's minute. This is somewhat the natural way that
+# people tend to think of time ranges and I didn't want to fight that
+# instinct.
+#
+# Dialed number is the numeric number that the calling party dialed. This can
+# include - for readability. You can also use X for match any number in that
+# position.
+#
+# Caller id is the number of the calling party.  It can use the same rules as
+# for the dialed number.
+#
+# Right now the expression can include the wildcards * to mean match anything.
+# But nothing more sophisticated.
+#
+# The operation can be one of the following
+#
+# PASSTHRU - Do nothing, just exit and go onto the next step in the asterisk
+# config for this extension.  
+# HANGUP - Meaning just hangup
+# PLAY(file) - Use the Asterisk Playback command to play a file.
+# GOTO(context,number,priority) - Same as Asterisk Goto command.
+#
+
+#Month  Day  DOW  Time         Called #  CallerID        Route
+
+# Who calls this late?
+*       *   *      01:00-05:00  *           *          PLAY(any-idea-what-time-it-is)
+
+# Just Hangup on a known telemarketer that won't leave you alone.
+*       *    *    *             *           3215550666      HANGUP
+
+
+# If they call the business number after hours, say that we're closed.
+*       *   Sat-Sun *            8885551234  *          PLAY(we-are-closed),HANGUP
+*       *   *       00:00-09:00  8885551234  *          PLAY(we-are-closed),HANGUP
+*       *   *       17:30-24:00  8885551234  *          PLAY(we-are-closed),HANGUP
+
+# Send our own numbers directly to the home cordless no matter what number is
+# called.
+# Me
+*       *    *    *            *           3045559876      EXTENSION(home,88,1)
+# Spouse
+*       *    *    *            *           3045559877      EXTENSION(home,88,1)
+
+# Send anyone else who dials the home number through the home default extension.
+# Maybe you have some menu system there or something.
+*       *    *    *            3045551234  *               EXTENSION(home,s,1)
+
+# At this point we can send all other calls to the office number to a special
+# office extension 202.
+*       *    *    *            8885551234  *               EXTENSION(office,202,1)
+
+# If we didn't match anything else in this file, then exit the program and
+# continue with the next priority step in the Asterisk dialplan.
+*        *    *    *           *           *               PASSTHRU
+
+
