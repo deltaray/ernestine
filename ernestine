@@ -251,14 +251,15 @@ DEF: foreach my $routedef (@{$config{'RouteDefinitions'}{'RouteDefine'}}) {
             &log_msg('ERROR', "Route name $route_name is not valid.");
         }
 
-        @route_targets = split(/,/, $route_target_string);
-        foreach my $target (@route_targets) {
-            my $target_name = $target;
-            $target_name =~ s/\(.*$//; # Strip off any argument section.
+
+        my $target = "";
+        while (($target, $route_target_string) = &pop_route_string($route_target_string)) {
+            my $target_name = &route_base_name($target);
             if (!defined($route_definitions{$target_name})) {
                 &log_msg('ERROR', "Invalid route definition $route_name, $target_name is not a defined route.");
                 next DEF;
             }
+            push(@route_targets, $target);
         }
         $route_definitions{$route_name} = \@route_targets;
     }
