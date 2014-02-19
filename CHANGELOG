@@ -1,3 +1,18 @@
+
+-- 2014-02-18 --
++ Changed the EXTENSION command to GOTO. I will add EXTENSION later
+  once I implement custom rules that can take args.
++ Cleaned up subroutine code a bit. Perl subs don't need (). Doh!
++ Changed expression route processing and expression matching code
+  so that it properly tokenizes the expressions instead of just
+  doing a simple split. This allows for more complex expressions.
++ Added character escaping in expressions.
++ Added quoting in expressions.
++ Added CALLERNAME processing.
++ Changed ernestine.d/main example config to have a bit more
+  descriptive examples and explaination of FORMAT change lines.
+
 -- 2014-02-11 --
 + Fixed problem with route definitions with args. (#1)
 
+ 

@@ -34,7 +34,7 @@ use warnings;
 use strict;
 
 our $PROGRAM_NAME = 'ernestine';
-our $VERSION = 0.9;
+our $VERSION = 0.10;
 
 $| = 1;
 my $callerid_name_sane = 1;
@@ -47,6 +47,7 @@ use Getopt::Std;
 use Scalar::Util qw(looks_like_number);
 use Asterisk::AGI;
 use Config::General;
+#use Data::Dumper; # Used during development.
 
 $times{'post_module_load'} = Time::HiRes::time();
 
@@ -223,6 +224,7 @@ our %format_keys = (
     'DAYOFWEEK'     =>  \&does_dow_match,
     'TIME'          =>  \&does_time_match,
     'CALLEDNUMBER'  =>  \&does_callednumber_match,
+    'CALLERNAME'    =>  \&does_callername_match,
     'CALLERID'      =>  \&does_callerid_match,
     'ROUTE'         =>  \&process_route,
 
@@ -266,10 +268,13 @@ DEF: foreach my $routedef (@{$config{'RouteDefinitions'}{'RouteDefine'}}) {
 }
 $times{'post_route_def_process'} = Time::HiRes::time();
 
+#my $ruleset_dump = Dumper \$config{'RuleSets'}{'RuleSet'};
+#&log_msg('DEBUG', $ruleset_dump);
 
+# There is a problem here if there is only one nested container because it makes it a scalar.
 my $symbolic_call_route = ""; # This will be the route target string that is on the matched line.
 if (defined($config{'RuleSets'}{'RuleSet'})) {
-RULE: foreach my $ruleset (@{$config{'RuleSets'}{'RuleSet'}}) {
+RULE: foreach my $ruleset (values @{$config{'RuleSets'}{'RuleSet'}}) {
         &log_msg('DEBUG', "Attempting to load ruleset at path " . $ruleset->{'Path'});
         if (-f $ruleset->{'Path'}) {
             if ($ruleset->{'Type'} eq "fullrule") {
@@ -369,7 +374,7 @@ my $total_time = $times{'script_finished'} - $times{'script_start'};
 #############
 # FUNCTIONS #
 #############
-sub show_help() {
+sub show_help {
     print <<"EOF";
 --------------------------------------------------------------------------
 $PROGRAM_NAME: A call router for Asterisk using the AGI interface.
@@ -392,7 +397,7 @@ EOF
 }
 
 
-sub get_timestamp() {
+sub get_timestamp {
     my $epoch_time = shift || time();
     # We'll make these globals that we can use so we don't have to go calling time a bunch.
     my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst);
@@ -403,7 +408,7 @@ sub get_timestamp() {
     return $timestamp;
 }
 
-sub log_msg() {
+sub log_msg {
     my $log_level = shift;
     my $log_msg = shift;
     chomp($log_msg); # Remove any trailing newline that might already be there.
@@ -424,7 +429,7 @@ sub log_msg() {
     return 1; 
 }
  
-sub fatal() {
+sub fatal {
     my $fatal_message = shift;
     &log_msg('FATAL', $fatal_message);
     die($fatal_message);
@@ -433,7 +438,7 @@ sub fatal() {
 
 # We don't want to have a caller id string with weird characters in it, so let's check it
 # and sanitize it.
-sub sanitize_callerid_name_str() {
+sub sanitize_callerid_name_str {
     my $namestring = shift;
 
     my $str_len = length($namestring);
@@ -458,7 +463,7 @@ sub sanitize_callerid_name_str() {
     return $namestring;
 }
 
-sub is_value_in_array() {
+sub is_value_in_array {
     my $value = shift;
     my $array = shift;
     my $in_array = 0;
@@ -471,7 +476,7 @@ sub is_value_in_array() {
     return $in_array;
 }
 
-sub check_numberlist_file() {
+sub check_numberlist_file {
     my $numberfile = shift;
     my $callerid_number = shift;
 
@@ -492,7 +497,92 @@ sub check_numberlist_file() {
     return 0;
 }
 
-sub check_full_route_file() {
+sub tokenize_format_line {
+    my $format_line = shift;
+    my $line_len = length($format_line);
+    my @return_array = ();
+
+    if ($format_line !~ m/^FORMAT:/) {
+        &log_msg('ERROR', "A line that was not a format line was passed: $format_line");
+        return 0;
+    } else {
+        # Start right after the FORMAT: part
+   CHR: for(my $i = 7; $i < $line_len; $i++) {
+            my $chr = substr($format_line, $i, 1);
+            if ($chr eq " " || $chr eq "\t") {
+                next CHR;
+            }
+            if ($chr =~ m/[A-Z]/) { # This means we've encountered a word.
+                my $word = "";
+                while ($chr !~ m/\s/ && $i != $line_len) {
+                    $word .= $chr;
+                    $i++;
+                    $chr = substr($format_line, $i, 1);
+                }
+                push(@return_array, $word);
+            }
+        }
+    }
+    return @return_array;
+}
+
+sub tokenize_route_line {
+    my $route_line = shift;
+    my $line_len = length($route_line);
+    my @return_array = ();
+
+CHR: for(my $i = 0; $i < $line_len; $i++) {
+        my $chr = substr($route_line, $i, 1);
+
+        if ($chr eq " " || $chr eq "\t") {
+            next CHR;
+        }
+
+       if ($chr !~ m/\s/) { # This means we've encountered a word. So read it to the end.
+            my $word = "";
+            while ($chr !~ m/\s/ && $i != $line_len) {
+
+                if ($chr eq '\\') { # Get the next character.
+                    $word .= $chr; # The escape should be left in.
+                    $i++;
+                    $chr = substr($route_line, $i, 1);
+                } elsif ($chr eq '"') {
+                    $word .= $chr;
+                    $i++;
+                    $chr = substr($route_line, $i, 1);
+                    while ($i != $line_len) { # Seek to the end of the quoted part.
+                        if ($chr eq '\\') {
+                            $word .= $chr;
+                            $i++;
+                            $chr = substr($route_line, $i, 1);
+                        } elsif ($chr eq '"') {
+                            $word .= $chr;
+                            $i++;
+                            $chr = substr($route_line, $i, 1);
+                            last;
+                        } else {
+                            $word .= $chr;
+                            $i++;
+                            $chr = substr($route_line, $i, 1);
+                        }
+                    }
+                }
+                # This has to be here to prevent a trailing space after a quote at the end of the field.
+                if ($chr !~ m/\s/) {
+                    $word .= $chr;
+                    $i++;
+                    $chr = substr($route_line, $i, 1);
+                }
+            }
+            push(@return_array, $word);
+        }
+    }
+    return @return_array;
+}
+
+
+
+sub check_full_route_file {
     my $routefile = shift;
     my $dialed_number = shift;
     my $callerid_number = shift;
@@ -517,15 +607,9 @@ LINE:while (<$fh>) {
         &log_msg('DEBUG', "This is a full route line \"$_\"");
 
         # If this is a format line, we need to redefine the format.
-        if ($_ =~ m/^FORMAT:\s*(.+)\s*$/) {
-            my $line_format_string = $1;
-            if ($line_format_string =~ m/^[A-Z\ ]+$/) {
-                @line_format = split(/\s+/, $line_format_string);
-                $line_format_length = @line_format;
-
-            } else {
-                &fatal("Routefile $routefile had an invalid format line at line $ln");
-            }
+        if ($_ =~ m/^FORMAT: [A-Z\s]+$/) {
+            @line_format = &tokenize_format_line($_);
+            $line_format_length = @line_format;
             next LINE;
         }
 
@@ -533,20 +617,21 @@ LINE:while (<$fh>) {
         # First check for formatting and correct number of values.
         if ($_ =~ m/^\s*(.+)\s*$/) {
             my $line_string = $1;
-            my @line_values = split(/\s+/, $line_string);
+            my @line_values = &tokenize_route_line($line_string);
+
             if (scalar @line_values != scalar @line_format) {
                 &log_msg('ERROR', "On line $ln of routefile $routefile there are not the correct number of values.");
                 next LINE;
             }
-            
-            
+
+            # FIX THIS SO IT DEALS WITH ESCAPES AND QUOTES
+
             for (my $i = 0; $i < $line_format_length; $i++) { # Iterate over the format and check the line.
                 my $value_type = $line_format[$i];
                 my $value = $line_values[$i];
                 if ($value_type eq 'ROUTE') {
                     $return_route = $value;
                 } else {
-
                     if (!$format_keys{$value_type}($value)) {
                         &log_msg('INFO', "No match for value $value of type $value_type");
                         next LINE;
@@ -556,12 +641,8 @@ LINE:while (<$fh>) {
             &log_msg('INFO', "On line $ln of file $routefile matched full route line \"$_\"");
 
 
-
-
             &log_msg("INFO", "Return route is $return_route");
             last LINE; # we're done once we've matched the first route.
- 
-
         }
 
         $ln++;
@@ -575,7 +656,7 @@ LINE:while (<$fh>) {
 # This function simply pops the first value off the route string
 # and returns an array with the popped value and the remainder of
 # the string.
-sub pop_route_string() {
+sub pop_route_string {
     my $route_string = shift;
     my $route_string_len = length($route_string);
     my $return_route = ""; 
@@ -608,7 +689,7 @@ CHR:for (my $i = 0; $i < $route_string_len; $i++) {
 }
 
 
-sub route_base_name() {
+sub route_base_name {
     my $route_string = shift;
     $route_string =~ s/\(.*$//;
     return $route_string;
@@ -616,7 +697,7 @@ sub route_base_name() {
 
 # This will take a route string and resolve each route until its at a base Asterisk command.
 # Think of it was alias resolving.
-sub resolve_route() {
+sub resolve_route {
     my $route_string = shift;
     my $return_route_string = "";
     my $route_string_len = length($route_string);
@@ -650,10 +731,81 @@ sub resolve_route() {
     }
 }
 
+# This is for things like the callerid name field.
+sub does_callername_match {
+    my $expression = shift;
+    my $expression_length = length($expression);
+
+    my $callername = $callerid_name_sanitized;
+    my $callername_length = length($callername);
+
+    &log_msg('DEBUG', "Caller name is: '$callername' and expression is '$expression'");
+ 
+    # The first thing we'll do is eliminate an exact match
+    # and the wildcard match.
+    if ($expression eq '*') {
+        return 1;
+    }
+    if ($expression !~ m/\\/) { # We can't do this check so simply if there is a backslash.
+        $expression =~ s/^"//; # Remove double quotes from expression.
+        $expression =~ s/"$//;
+        if ($callername eq $expression) {
+            return 1;
+        }
+    }
+
+    # At this point we can make a simple assumption, if the length
+    # of the string is longer than the expression, it doesn't match.
+    if ($callername_length > $expression_length) {
+        return 0;
+    }
+
+    # These next situations are less likely to be used, but a more complex to parse.
+
+    # First, parse comma seperated values into individual expressions.
+    my @expression_array = ();
+    my $chr = "";
+    my $word = "";
+CHR:for (my $i = 0; $i < $expression_length; $i++) {
+        $chr = substr($expression, $i, 1);
+        if ($chr eq "\\") { # This will also take care of commas that are escaped.
+            $i++;
+            $chr = substr($expression, $i, 1);
+            $word .= $chr;
+            next CHR;
+        } elsif ($chr eq ",") {
+            push(@expression_array, $word);
+            &log_msg('DEBUG', "Pushing '$word' onto expression_array");
+            $word = "";
+            next CHR;
+        } elsif ($i + 1 == $expression_length) { # We're at the end.
+            $word .= $chr;
+            push(@expression_array, $word);
+            &log_msg('DEBUG', "Pushing '$word' onto expression_array");
+            $word = "";
+            last CHR;
+        } else {
+            $word .= $chr;
+        }
+    }
+
+    foreach my $this_expression (@expression_array) {
+        &log_msg('DEBUG', "Checking against the expression '$this_expression'");
+        $this_expression =~ s/^"//; # Remove double quotes from expression.
+        $this_expression =~ s/"$//;
+        if ($callername eq $this_expression) {
+            return 1;
+        }
+
+    }
+
+
+    return 0;
+}
 
 # Does the phone number match the matching expression.
 # This is simple matching. ? means match any one character.
-sub does_number_match() {
+sub does_number_match {
     my $number = shift;
     my $expression_passed = shift;
 
@@ -701,17 +853,17 @@ EXP: foreach my $expression (split(/,/, $expression_passed)) {
 
 }
 
-sub does_callerid_match() {
+sub does_callerid_match {
     my $expression = shift;
     return &does_number_match($callerid_number, $expression);
 }
-sub does_callednumber_match() {
+sub does_callednumber_match {
     my $expression = shift;
     return &does_number_match($dialed_number, $expression);
 }
 
 # For now, we'll require 24 hour time with minutes required.
-sub does_time_match() {
+sub does_time_match {
     my $tod_expression_passed = shift;
     my $current_hour = int($hour);
     my $current_minute = int($min);
@@ -762,7 +914,7 @@ sub does_time_match() {
     return 0;
 }
 
-sub does_day_match() {
+sub does_day_match {
     my $day_expression_passed = shift;
 
     foreach my $day_expression (split(/,/, $day_expression_passed)) {
@@ -779,7 +931,7 @@ sub does_day_match() {
 }
 
 # Day of week
-sub does_dow_match() {
+sub does_dow_match {
     my $dow_expression_passed = shift;
     my $cur_dow_name = $days_of_week{$dow};
 
@@ -815,7 +967,7 @@ sub does_dow_match() {
     return 0;
 } 
 
-sub does_month_match() {
+sub does_month_match {
     my $month_expression_passed = shift;
     my $cur_month_name = $months{$mon};
 

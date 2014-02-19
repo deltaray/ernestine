@@ -1,4 +1,8 @@
 USE AT YOUR OWN RISK
 This software is still considered beta. It works, but I make no guarantees that
 it is well debugged and doesn't have large security holes at this time.
+
+Also, I can't make any gaurantees that configuration formats will not change or
+be backward compatible yet. I'll try to stablize the format once I get most of the
+functionality in place.
 USE AT YOUR OWN RISK

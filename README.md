@@ -64,12 +64,12 @@ RULESETS
 
 The default 'fullrule' type of ruleset file has lines that looks like this:
 
-Jan,Feb,Oct-Dec  5,10-31  Mon-Sun  00:00-24:00  * 8001234567 PLAY(goodbye),HANGUP
+Jan,Feb,Oct-Dec  5,10-31  Mon-Sun  00:00-24:00  8001234567 PLAY(goodbye),HANGUP
 
 Each column is an expression that can be matched and then a route target which secifies
 what to do when the line matches. Below is the default column format:
 
-MONTH   MONTHDAY   DAYOFWEEK   TIME   CALLEDNUMBER   CALLERID   ROUTE
+MONTH   MONTHDAY   DAYOFWEEK   TIME   CALLERID   ROUTE
 
 * can be used to match anything for any of the columns.
 
@@ -90,6 +90,8 @@ TIME  is the time of day. This must be in 24-hour time format and include
 CALLEDNUMBER is the number that the caller dialed.
 
 CALLERID is the caller id of the caller.
+
+CALLERNAME is the Caller id name value.
 
 ROUTE is the target route to run if all the expressions match.
 

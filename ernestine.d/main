@@ -35,37 +35,49 @@
 # GOTO(context,number,priority) - Same as Asterisk Goto command.
 #
 
-#Month  Day  DOW  Time         Called #  CallerID        Route
+# This is the default line format that is defined even if you don't define one.
+# FORMAT: MONTH   MONTHDAY   DAYOFWEEK   TIME   CALLERID   ROUTE
+#Month  Day  DOW  Time         CallerID        Route
 
 # Who calls this late?
-*       *   *      01:00-05:00  *           *          PLAY(any-idea-what-time-it-is)
+*       *   Sat-Sun   00:00-03:00  *          PLAY(party-on-garth)
+*       *   *         01:00-05:00  *          PLAY(any-idea-what-time-it-is)
 
 # Just Hangup on a known telemarketer that won't leave you alone.
-*       *    *    *             *           3215550666      HANGUP
+*       *    *    *             3215550666      HANGUP
 
 
+# Now we will change the format so that we also include matching against the
+# number that was called. You don't have to change the format if you don't want
+# to, but it does make lines a bit shorter and more readable.
+
+FORMAT: MONTH MONTHDAY DAYOFWEEK TIME CALLEDNUMBER CALLERID  ROUTE
 # If they call the business number after hours, say that we're closed.
-*       *   Sat-Sun *            8885551234  *          PLAY(we-are-closed),HANGUP
-*       *   *       00:00-09:00  8885551234  *          PLAY(we-are-closed),HANGUP
-*       *   *       17:30-24:00  8885551234  *          PLAY(we-are-closed),HANGUP
+*       *   Sat-Sun *            8885551234  *      PLAY(we-are-closed),HANGUP
+*       *   *       00:00-09:00  8885551234  *      PLAY(we-are-closed),HANGUP
+*       *   *       17:30-24:00  8885551234  *      PLAY(we-are-closed),HANGUP
 
+# Now we'll change the format again because in the rest of the file we don't
+# care about the date/time of the call.
+
+FORMAT: CALLEDNUMBER CALLERID ROUTE
 # Send our own numbers directly to the home cordless no matter what number is
 # called.
 # Me
-*       *    *    *            *           3045559876      EXTENSION(home,88,1)
+*           3045559876      GOTO(home,88,1)
 # Spouse
-*       *    *    *            *           3045559877      EXTENSION(home,88,1)
+*           3045559877      GOTO(home,88,1)
 
 # Send anyone else who dials the home number through the home default extension.
 # Maybe you have some menu system there or something.
-*       *    *    *            3045551234  *               EXTENSION(home,s,1)
+3045551234  *               GOTO(home,s,1)
 
 # At this point we can send all other calls to the office number to a special
 # office extension 202.
-*       *    *    *            8885551234  *               EXTENSION(office,202,1)
+8885551234  *               GOTO(office,202,1)
 
 # If we didn't match anything else in this file, then exit the program and
 # continue with the next priority step in the Asterisk dialplan.
-*        *    *    *           *           *               PASSTHRU
+*           *               PASSTHRU
 
 
