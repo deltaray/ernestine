@@ -34,7 +34,7 @@ use warnings;
 use strict;
 
 our $PROGRAM_NAME = 'ernestine';
-our $VERSION = 0.10;
+our $VERSION = 0.11;
 
 $| = 1;
 my $callerid_name_sane = 1;
@@ -211,10 +211,19 @@ $times{'post_variable_init'} = Time::HiRes::time();
 # This is the base route definitions that are defined by default
 # And the user can build off of these.
 our %route_definitions = (
-    'HANGUP' => [],
+    'ANSWER' => [],
+    'BACKGROUND' => [],
     'GOTO' => [],
-    'PLAY' => [],
+    'HANGUP' => [],
+    'MONITOR' => [],
     'PASSTHRU' => [],
+    'PLAY' => [],
+    'PROGRESS' => [],
+    'RECORD' => [],
+    'RINGING' => [],
+    'SAYUNIXTIME' => [],
+    'WAIT' => [],
+    'ZAPATELLER' => [],
 );
 
 our %format_keys = (
@@ -329,38 +338,52 @@ while (($route_command, $expanded_call_route) = &pop_route_string($expanded_call
 
     &log_msg('INFO', "Running route command $route_command");
 
+    # Chop off any argument and save it.
+    my $route_args = "";
+    if ($route_command =~ s/\((.+)\)//) {
+        $route_args = $1;
+    }
+
+
     # ok, here is were we take the route returned and send the call there.
-    if ($route_command eq "HANGUP") {
-        &log_msg('DEBUG', "In HANGUP route");
+    if ($route_command eq "ANSWER") {
+        &log_msg('DEBUG', "AGI answer");
+        $agi->answer($route_args);
+    } elsif ($route_command eq "HANGUP") {
         &log_msg('DEBUG', "AGI hangup");
-        $agi->hangup();
+        $agi->hangup($route_args);
+    } elsif ($route_command eq "GOTO") {
+        &log_msg('DEBUG', "In GOTO route. Passed extension is ${route_args}.");
 
-    } elsif ($route_command =~ m/^GOTO\(([^\)]*)\)$/) {
-        my $passed_args_string = $1;
-        &log_msg('DEBUG', "In GOTO route. Passed extension is ${passed_args_string}.");
-
-        if ($passed_args_string =~ m/^([0-9A-Za-z,_-]+)$/) { # NEED TO IMPROVE THIS PART.
-            &log_msg('INFO', "INFO: GOTO extension $passed_args_string");
-            $agi->answer();
-            &log_msg('DEBUG', "AGI GOTO $passed_args_string");
-            $agi->exec('Goto', "$passed_args_string");
+        if ($route_args =~ m/^([0-9A-Za-z,_-]+)$/) { # NEED TO IMPROVE THIS PART.
+            &log_msg('INFO', "INFO: GOTO extension $route_args");
+            &log_msg('DEBUG', "AGI GOTO $route_args");
+            $agi->exec('Goto', "$route_args");
         } else {
-            &log_msg('ERROR', "Extension $passed_args_string is not valid. Exiting.");
+            &log_msg('ERROR', "Extension $route_args is not valid. Exiting.");
             exit(1);
         }
-    } elsif ($route_command =~ m/PLAY\(([^\)]*)\)$/) {
-    #    $agi->stream_file('asterisk-sounds/get-in-line-sales-guy','8');
-    #    sleep(10);
-        my $passed_audiofile = $1;
-        &log_msg('DEBUG', "AGI Playback of file $passed_audiofile");
-        $agi->exec('Playback', $passed_audiofile);
-
-    } elsif ($route_command eq "PASSTHRU") {
+    } elsif ($route_command eq "PASSTHRU") { # Just exit the program (pass through to next priority in extension.
         &log_msg('DEBUG', "We're inside PASSTHRU route");
         exit(0);
-    #} elsif ($route_command eq "") {
+    } elsif ($route_command eq "PLAY") {
+        &log_msg('DEBUG', "AGI Playback of file $route_args");
+        $agi->exec('Playback', $route_args);
+    } elsif ($route_command eq "RECORDING") {
+        &log_msg('DEBUG', "AGI Record file with args $route_args");
+        $agi->record_file($route_args);
+
+    } elsif ($route_command =~ m/^(BACKGROUND|MONITOR|PROGRESS|RINGING|SAYUNIXTIME|WAIT|ZAPATELLER)$/) {
+    # Asterisk commands don't have an AGI interface.
+        if (length($route_args))  {
+            &log_msg('DEBUG', "Running AGI command '$route_command' with args '$route_args'");
+            $agi->exec($route_command, $route_args);
+        } else {
+            &log_msg('DEBUG', "Running AGI command '$route_command' without args");
+            $agi->exec($route_command);
+        }
     } else {
-        &log_msg('ERROR', "Something went wrong and we're in the else clause of routes.");
+        &log_msg('ERROR', "Something went wrong and we're in the else clause of route processing.");
     }
 
 }
